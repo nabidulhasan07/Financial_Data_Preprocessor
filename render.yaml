@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: financial-data-preprocessor
+    runtime: docker
+    plan: free
+    rootDir: Financial_Data_Preprocessor
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
