@@ -25,6 +25,7 @@ import {
 import {
   cleanDataset,
   downloadDataset,
+  downloadQualityReportPdf,
   getHealth,
   getAnalysis,
   getApiError,
@@ -228,6 +229,19 @@ function Dashboard({ onBack }) {
     finally { setBusy(false) }
   }
 
+  const exportQualityPdf = async () => {
+    if (!dataset) return
+    setBusy(true); setError('')
+    try {
+      const blob = await downloadQualityReportPdf(dataset.dataset_id)
+      setApiStatus('connected')
+      const stem = dataset.filename.replace(/\.[^.]+$/, '')
+      downloadBlob(blob, `${stem}_visual_quality_report.pdf`)
+      setNotice('Your visual financial quality report has been downloaded.')
+    } catch (requestError) { setApiStatus('disconnected'); setError(getApiError(requestError)) }
+    finally { setBusy(false) }
+  }
+
   const activeItem = navigation.find((item) => item.id === active) ?? navigation[0]
   const stats = getDatasetStats(dataset)
   const showUpload = active === 'upload' || (!dataset && active === 'overview')
@@ -274,7 +288,7 @@ function Dashboard({ onBack }) {
 
           {active === 'analysis' && (!dataset ? <NoDataset onUpload={() => navigate('upload')} /> : <><div className="calculation-note"><AlertCircle size={16} />{dataset.analysis.unknown_amounts.toLocaleString()} missing or invalid amount{dataset.analysis.unknown_amounts === 1 ? '' : 's'} excluded from financial calculations. Unknown amounts are not treated as zero.</div><section className="analysis-summary"><article><span>Average transaction</span><strong>{formatMoney(dataset.analysis.average_transaction)}</strong><small>Valid amounts only</small></article><article><span>Net cash flow</span><strong>{formatMoney(dataset.analysis.total_income - dataset.analysis.total_expenses)}</strong><small>Income less expenses</small></article><article><span>Records analyzed</span><strong>{dataset.row_count.toLocaleString()}</strong><small>Current processed rows</small></article></section><DashboardCharts analysis={dataset.analysis} /><DataTable dataset={dataset} /></>)}
 
-          {active === 'reports' && (!dataset ? <NoDataset onUpload={() => navigate('upload')} /> : <><section className="dash-card report-card"><div className="report-icon"><FileCheck2 size={21} /></div><div className="report-copy"><h2>Data quality summary</h2><p>A downloadable snapshot of the dataset, cleaning activity, validation findings, and financial analysis.</p></div><button className="button button--dashboard" onClick={exportQuality} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <ArrowDownToLine size={16} />} Download summary</button></section>
+          {active === 'reports' && (!dataset ? <NoDataset onUpload={() => navigate('upload')} /> : <><section className="dash-card report-card"><div className="report-icon"><FileCheck2 size={21} /></div><div className="report-copy"><h2>Data quality summary</h2><p>Download a visual PDF with charts and recommendations, or keep the detailed JSON report.</p></div><div className="report-download-actions"><button className="button button--dashboard" onClick={exportQualityPdf} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} Download PDF</button><button className="button button--outline" onClick={exportQuality} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <ArrowDownToLine size={16} />} Download JSON</button></div></section>
             <section className="dash-card export-card"><div className="dash-card-heading"><div><h2>Export cleaned data</h2><p>Download the current dataset processed by the backend.</p></div></div><div className="export-actions"><button onClick={() => exportFile('csv')} disabled={busy}><FileSpreadsheet size={18} /><span><b>Export CSV</b><small>Comma-separated values</small></span><ArrowDownToLine size={17} /></button><button onClick={() => exportFile('xlsx')} disabled={busy}><FileSpreadsheet size={18} /><span><b>Export Excel</b><small>Microsoft Excel workbook</small></span><ArrowDownToLine size={17} /></button></div></section>
             {qualityData && <section className="dash-card quality-preview"><div className="dash-card-heading"><div><h3>Report preview</h3><p>Latest quality metrics from the API</p></div></div><div className="quality-metrics"><span><b>{qualityData.row_count.toLocaleString()}</b> rows</span><span><b>{qualityData.column_count}</b> columns</span><span><b>{qualityData.missing_values.toLocaleString()}</b> missing values</span><span><b>{qualityData.duplicate_records.toLocaleString()}</b> duplicates</span><span><b>{qualityData.validation.count.toLocaleString()}</b> validation issues</span></div><div className="report-money-preview"><span>Income <b>{formatMoney(qualityData.analysis.total_income)}</b></span><span>Expenses <b>{formatMoney(qualityData.analysis.total_expenses)}</b></span><span>Average <b>{formatMoney(qualityData.analysis.average_transaction)}</b></span><span>Net cash flow <b>{formatMoney(qualityData.analysis.total_income - qualityData.analysis.total_expenses)}</b></span></div></section>}</>)}
         </main>

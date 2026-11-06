@@ -56,7 +56,16 @@ is held temporarily in backend memory; restarting FastAPI clears it.
 Main dataset API routes are `POST /api/datasets` (upload),
 `POST /api/datasets/{id}/clean`, `GET /api/datasets/{id}/validation`,
 `GET /api/datasets/{id}/analysis`, `GET /api/datasets/{id}/quality`, and
+`GET /api/datasets/{id}/quality/pdf` (visual PDF report), and
 `GET /api/datasets/{id}/export?format=csv` or `format=xlsx`.
+
+The visual quality PDF is generated from the same quality report data as the
+JSON download. It includes financial summary cards, income and expense charts,
+category summaries, data quality findings, cleaning status, and recommendations.
+Missing financial values are labelled as unavailable rather than treated as
+zero. The PDF generator uses ReportLab and an embedded Unicode font to render
+Indian Rupee amounts correctly; these dependencies are included in
+`backend/requirements.txt` and the production Docker image.
 
 ## Deploy publicly on Render
 

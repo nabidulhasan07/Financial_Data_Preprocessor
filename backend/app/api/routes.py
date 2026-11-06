@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import re
 from threading import RLock
 from uuid import uuid4
 
@@ -10,6 +11,7 @@ from fastapi.responses import Response
 
 from ..models.datasets import CleaningOptions
 from ..services.dataset_service import analysis, clean_frame, frame_records, missing_value_count, validation
+from ..services.quality_pdf import build_quality_pdf
 
 router = APIRouter()
 datasets: dict[str, dict] = {}
@@ -122,6 +124,20 @@ def quality_report(dataset_id: str) -> dict:
         "cleaning_summary": dataset["cleaning_summary"],
         "analysis": analysis(frame),
     }
+
+
+@router.get("/datasets/{dataset_id}/quality/pdf")
+def export_quality_report_pdf(dataset_id: str) -> Response:
+    report = quality_report(dataset_id)
+    content = build_quality_pdf(report)
+    original_stem = report.get("filename", "financial_data")
+    stem = original_stem.rsplit(".", 1)[0] if "." in original_stem else original_stem
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "financial_data"
+    return Response(
+        content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_stem}_visual_quality_report.pdf"'},
+    )
 
 
 @router.get("/datasets/{dataset_id}/export")

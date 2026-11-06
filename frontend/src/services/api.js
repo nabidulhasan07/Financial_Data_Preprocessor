@@ -39,6 +39,11 @@ export async function getQualityReport(datasetId) {
   return response.data
 }
 
+export async function downloadQualityReportPdf(datasetId) {
+  const response = await api.get(`/datasets/${datasetId}/quality/pdf`, { responseType: 'blob', timeout: 60000 })
+  return response.data
+}
+
 export async function downloadDataset(datasetId, format) {
   const response = await api.get(`/datasets/${datasetId}/export`, { params: { format }, responseType: 'blob' })
   return response.data
