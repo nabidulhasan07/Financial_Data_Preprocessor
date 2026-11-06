@@ -423,6 +423,32 @@ def build_quality_pdf(report: dict[str, Any]) -> bytes:
     else:
         status_text = "Cleaning status unavailable."
     story.append(_paragraph(status_text, styles["body"]))
+    cleaning_options = report.get("cleaning_options") if isinstance(report.get("cleaning_options"), dict) else None
+    if cleaning_options is not None:
+        strategy_labels = {
+            "keep": "Leave missing values unchanged",
+            "fill_zero": "Replace numeric missing values with zero",
+            "fill_mean": "Replace numeric missing values with mean",
+            "fill_median": "Replace numeric missing values with median",
+            "fill_mode": "Replace missing values with column mode",
+            "drop_rows": "Drop rows with missing values",
+            "fill_custom": "Replace missing values with a custom value",
+        }
+        option_rows = [
+            ("Missing value method", strategy_labels.get(cleaning_options.get("missing_strategy"), "Not available")),
+            ("Duplicate removal", "Enabled" if cleaning_options.get("remove_duplicates") else "Disabled"),
+            ("Date standardization", "Enabled" if cleaning_options.get("standardize_dates") else "Disabled"),
+            ("Invalid amount coercion", "Enabled" if cleaning_options.get("coerce_invalid_numbers") else "Disabled"),
+        ]
+        if cleaning_options.get("missing_strategy") == "fill_custom":
+            option_rows.append(("Custom value", str(cleaning_options.get("custom_value") or "Not available")))
+        option_table = Table(
+            [[_paragraph(label, styles["table_cell"]), _paragraph(value, styles["table_cell"])] for label, value in option_rows],
+            colWidths=[87 * mm, 87 * mm],
+            hAlign="LEFT",
+        )
+        option_table.setStyle(_table_style(header=False))
+        story.extend([Spacer(1, 3 * mm), option_table])
     cleaning = report.get("cleaning_summary") if isinstance(report.get("cleaning_summary"), dict) else None
     if cleaning is not None:
         cleaning_items = [

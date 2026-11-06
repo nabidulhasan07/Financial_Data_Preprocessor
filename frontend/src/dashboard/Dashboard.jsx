@@ -17,8 +17,11 @@ import {
   LoaderCircle,
   Menu,
   Rows3,
+  RotateCcw,
   ShieldCheck,
   Sparkles,
+  Undo2,
+  Eye,
   WandSparkles,
   X,
 } from 'lucide-react'
@@ -31,12 +34,23 @@ import {
   getApiError,
   getQualityReport,
   getValidation,
+  previewCleaning,
+  resetDataset,
+  undoCleaning,
   uploadDataset,
 } from '../services/api'
 import DataTable from './DataTable'
 import DashboardCharts from './DashboardCharts'
 import { formatMoney } from '../utils/formatMoney'
 import './Dashboard.css'
+
+const defaultCleaningOptions = {
+  missing_strategy: 'keep',
+  custom_value: '',
+  remove_duplicates: true,
+  standardize_dates: true,
+  coerce_invalid_numbers: true,
+}
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -146,7 +160,8 @@ function Dashboard({ onBack }) {
   const [apiStatus, setApiStatus] = useState('checking')
   const [validationData, setValidationData] = useState(null)
   const [qualityData, setQualityData] = useState(null)
-  const [cleaningOptions, setCleaningOptions] = useState({ missing_strategy: 'keep', remove_duplicates: true, standardize_dates: true, coerce_invalid_numbers: true })
+  const [cleaningOptions, setCleaningOptions] = useState(defaultCleaningOptions)
+  const [cleaningPreview, setCleaningPreview] = useState(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -162,6 +177,7 @@ function Dashboard({ onBack }) {
       const result = await uploadDataset(file)
       setApiStatus('connected')
       setDataset(result); setFileMeta({ name: result.filename, size: file.size }); setValidationData(result.validation); setQualityData(null)
+      setCleaningOptions(defaultCleaningOptions); setCleaningPreview(null)
       setNotice(`Uploaded ${result.filename}. Review the preview, then choose a workflow section.`)
       setActive('overview')
     } catch (requestError) {
@@ -184,20 +200,63 @@ function Dashboard({ onBack }) {
     } catch (requestError) { setApiStatus('disconnected'); setError(getApiError(requestError)) }
   }
 
-  const runCleaning = async () => {
+  const updateCleaningOption = (name, value) => {
+    setCleaningOptions((current) => ({ ...current, [name]: value }))
+    setCleaningPreview(null)
+  }
+
+  const previewCleaningChanges = async () => {
     if (!dataset) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const result = await previewCleaning(dataset.dataset_id, cleaningOptions)
+      setApiStatus('connected')
+      setCleaningPreview(result)
+      const stats = result.cleaning_summary
+      setNotice(`Preview ready from the original upload: ${result.row_count} rows, ${stats.missing_values_filled} missing values filled, ${stats.missing_values_dropped} dropped, and ${stats.missing_values_remaining} still missing. This preview has not been applied.`)
+    } catch (requestError) { setApiStatus('disconnected'); setError(getApiError(requestError)) }
+    finally { setBusy(false) }
+  }
+
+  const runCleaning = async () => {
+    if (!dataset || !cleaningPreview) return
     setBusy(true); setError(''); setNotice('')
     try {
       const result = await cleanDataset(dataset.dataset_id, cleaningOptions)
       setApiStatus('connected')
-      setDataset(result); setValidationData(result.validation); setQualityData(null)
+      setDataset(result); setValidationData(result.validation); setQualityData(null); setCleaningPreview(null)
+      setCleaningOptions(result.cleaning_options ?? cleaningOptions)
       const stats = result.cleaning_summary
       const amountSummary = stats.missing_amounts_filled > 0
         ? `Filled ${stats.missing_amounts_filled} missing amount${stats.missing_amounts_filled === 1 ? '' : 's'}${stats.missing_amount_fill_value !== null ? ` with ${formatMoney(stats.missing_amount_fill_value)}` : ''}.`
         : stats.missing_amounts_remaining > 0
           ? `Left ${stats.missing_amounts_remaining} unknown amount${stats.missing_amounts_remaining === 1 ? '' : 's'} unchanged; they are excluded from totals and averages.`
           : 'No unknown amounts remain.'
-      setNotice(`Cleaning complete: handled ${stats.missing_values_handled} of ${stats.missing_values_detected} missing cells (${stats.missing_values_filled} filled, ${stats.missing_values_dropped} removed); ${stats.missing_values_remaining} remain. ${amountSummary} Removed ${stats.duplicates_removed} duplicates, standardized ${stats.dates_standardized} dates, and coerced ${stats.numbers_coerced} invalid amounts.`)
+      setNotice(`Cleaning applied from the original upload: handled ${stats.missing_values_handled} of ${stats.missing_values_detected} missing cells (${stats.missing_values_filled} filled, ${stats.missing_values_dropped} removed); ${stats.missing_values_remaining} remain. ${amountSummary} Removed ${stats.duplicates_removed} duplicates, standardized ${stats.dates_standardized} dates, and coerced ${stats.numbers_coerced} invalid amounts.`)
+    } catch (requestError) { setApiStatus('disconnected'); setError(getApiError(requestError)) }
+    finally { setBusy(false) }
+  }
+
+  const undoLastCleaning = async () => {
+    if (!dataset?.has_undo) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const result = await undoCleaning(dataset.dataset_id)
+      setDataset(result); setValidationData(result.validation); setQualityData(null); setCleaningPreview(null)
+      setCleaningOptions(result.cleaning_options ?? defaultCleaningOptions)
+      setApiStatus('connected'); setNotice('Restored the previous cleaning state.')
+    } catch (requestError) { setApiStatus('disconnected'); setError(getApiError(requestError)) }
+    finally { setBusy(false) }
+  }
+
+  const resetToOriginal = async () => {
+    if (!dataset?.cleaned) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const result = await resetDataset(dataset.dataset_id)
+      setDataset(result); setValidationData(result.validation); setQualityData(null); setCleaningPreview(null)
+      setCleaningOptions(defaultCleaningOptions)
+      setApiStatus('connected'); setNotice('Restored the dataset exactly as it was uploaded.')
     } catch (requestError) { setApiStatus('disconnected'); setError(getApiError(requestError)) }
     finally { setBusy(false) }
   }
@@ -244,6 +303,7 @@ function Dashboard({ onBack }) {
 
   const activeItem = navigation.find((item) => item.id === active) ?? navigation[0]
   const stats = getDatasetStats(dataset)
+  const originalMetrics = dataset?.original_metrics ?? dataset?.analysis ?? {}
   const showUpload = active === 'upload' || (!dataset && active === 'overview')
 
   return (
@@ -275,13 +335,41 @@ function Dashboard({ onBack }) {
           {active === 'upload' && <section className="dash-card upload-section"><div className="dash-card-heading"><div><h2>Upload a dataset</h2><p>Import a CSV or Excel workbook to preview and process financial records.</p></div></div><UploadBox onFile={loadFile} busy={busy} fileMeta={fileMeta} />{dataset && <div className="upload-details"><span><FileSpreadsheet size={16} /> Current file <b>{dataset.filename}</b></span><span><Rows3 size={16} /> {dataset.row_count.toLocaleString()} rows</span><button className="text-action" onClick={() => navigate('overview')}>View preview <ArrowLeft size={14} /></button></div>}</section>}
 
           {active === 'cleaning' && <>
-            {!dataset ? <NoDataset onUpload={() => navigate('upload')} /> : <><section className="dash-card cleaning-options"><div className="dash-card-heading"><div><h2>Cleaning options</h2><p>Choose how Pandas should handle the current dataset.</p></div><span className={`state-badge${dataset.cleaned ? ' state-badge--done' : ''}`}>{dataset.cleaned ? <><Check size={13} /> Cleaned</> : 'Not cleaned yet'}</span></div>
-              <div className="cleaning-option-grid"><label className="cleaning-select"><span>Missing values and amounts</span><select value={cleaningOptions.missing_strategy} onChange={(event) => setCleaningOptions({ ...cleaningOptions, missing_strategy: event.target.value })}><option value="keep">Leave missing amounts unchanged</option><option value="fill_zero">Fill missing amounts with 0</option><option value="fill_mean">Fill missing amounts with the mean</option><option value="fill_median">Fill missing amounts with the median</option><option value="drop_rows">Remove rows with missing values</option></select><small>{dataset.analysis.missing_values.toLocaleString()} missing cell{dataset.analysis.missing_values === 1 ? '' : 's'}, including {dataset.analysis.missing_amounts.toLocaleString()} missing amount{dataset.analysis.missing_amounts === 1 ? '' : 's'}. Unchanged amounts stay unknown, not zero.</small></label>
-                <ToggleOption title="Remove duplicate records" detail={`${dataset.analysis.duplicate_records} exact duplicate row${dataset.analysis.duplicate_records === 1 ? '' : 's'} detected.`} checked={cleaningOptions.remove_duplicates} onChange={(checked) => setCleaningOptions({ ...cleaningOptions, remove_duplicates: checked })} />
-                <ToggleOption title="Standardize date formats" detail={dataset.analysis.detected_columns.date ? `Detected date column: ${dataset.analysis.detected_columns.date}` : 'No date-like column was recognized.'} checked={cleaningOptions.standardize_dates} onChange={(checked) => setCleaningOptions({ ...cleaningOptions, standardize_dates: checked })} disabled={!dataset.analysis.detected_columns.date} />
-                <ToggleOption title="Coerce invalid amounts" detail={dataset.analysis.detected_columns.amount ? `Invalid numbers in ${dataset.analysis.detected_columns.amount} become blank values.` : 'No amount-like column was recognized.'} checked={cleaningOptions.coerce_invalid_numbers} onChange={(checked) => setCleaningOptions({ ...cleaningOptions, coerce_invalid_numbers: checked })} disabled={!dataset.analysis.detected_columns.amount} />
-              </div><button className="button button--dashboard" onClick={runCleaning} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <WandSparkles size={16} />}{busy ? 'Cleaning dataset' : 'Clean dataset'}</button>
-            </section><DataTable dataset={dataset} /></>}
+            {!dataset ? <NoDataset onUpload={() => navigate('upload')} /> : <>
+              <section className="dash-card cleaning-options">
+                <div className="dash-card-heading">
+                  <div><h2>Cleaning options</h2><p>Preview each choice, then apply it to a fresh copy of the original upload.</p></div>
+                  <span className={`state-badge${dataset.cleaned ? ' state-badge--done' : ''}`}>{dataset.cleaned ? <><Check size={13} /> Cleaned</> : 'Original data'}</span>
+                </div>
+                <div className="cleaning-option-grid">
+                  <label className="cleaning-select">
+                    <span>Missing-value handling</span>
+                    <select value={cleaningOptions.missing_strategy} onChange={(event) => updateCleaningOption('missing_strategy', event.target.value)}>
+                      <option value="keep">Leave values unchanged</option>
+                      <option value="fill_zero">Replace numeric values with zero</option>
+                      <option value="fill_mean">Replace numeric values with mean</option>
+                      <option value="fill_median">Replace numeric values with median</option>
+                      <option value="fill_mode">Replace with column mode</option>
+                      <option value="drop_rows">Drop rows with missing values</option>
+                      <option value="fill_custom">Replace with a custom value</option>
+                    </select>
+                    {cleaningOptions.missing_strategy === 'fill_custom' && <input className="cleaning-custom-value" type="text" value={cleaningOptions.custom_value} onChange={(event) => updateCleaningOption('custom_value', event.target.value)} placeholder="Enter a number or text value" aria-label="Custom missing value" />}
+                    <small>{originalMetrics.missing_values.toLocaleString()} missing cells in the original upload, including {originalMetrics.missing_amounts.toLocaleString()} missing amounts. Zero, mean, and median apply to numeric columns; mode and custom values also handle categorical columns.</small>
+                  </label>
+                  <ToggleOption title="Remove duplicate records" detail={`${originalMetrics.duplicate_records} exact duplicate row${originalMetrics.duplicate_records === 1 ? '' : 's'} in the original upload.`} checked={cleaningOptions.remove_duplicates} onChange={(checked) => updateCleaningOption('remove_duplicates', checked)} />
+                  <ToggleOption title="Standardize date formats" detail={dataset.analysis.detected_columns.date ? `Detected date column: ${dataset.analysis.detected_columns.date}` : 'No date-like column was recognized.'} checked={cleaningOptions.standardize_dates} onChange={(checked) => updateCleaningOption('standardize_dates', checked)} disabled={!dataset.analysis.detected_columns.date} />
+                  <ToggleOption title="Coerce invalid amounts" detail={dataset.analysis.detected_columns.amount ? `Invalid numbers in ${dataset.analysis.detected_columns.amount} become missing values.` : 'No amount-like column was recognized.'} checked={cleaningOptions.coerce_invalid_numbers} onChange={(checked) => updateCleaningOption('coerce_invalid_numbers', checked)} disabled={!dataset.analysis.detected_columns.amount} />
+                </div>
+                <div className="cleaning-action-row">
+                  <button className="button button--outline" onClick={previewCleaningChanges} disabled={busy || (cleaningOptions.missing_strategy === 'fill_custom' && !cleaningOptions.custom_value.trim())}>{busy ? <LoaderCircle className="spin" size={16} /> : <Eye size={16} />} Preview results</button>
+                  <button className="button button--dashboard" onClick={runCleaning} disabled={busy || !cleaningPreview}>{busy ? <LoaderCircle className="spin" size={16} /> : <WandSparkles size={16} />} Apply cleaning</button>
+                  <button className="button button--outline" onClick={undoLastCleaning} disabled={busy || !dataset.has_undo}><Undo2 size={16} /> Undo cleaning</button>
+                  <button className="button button--outline" onClick={resetToOriginal} disabled={busy || !dataset.cleaned}><RotateCcw size={16} /> Reset to original</button>
+                </div>
+                {cleaningPreview && <div className="cleaning-preview-note" role="status"><Eye size={16} /><span><b>Preview only - not applied.</b> The table below shows the result from the original upload. Current analysis, reports, and exports still use the applied dataset.</span></div>}
+              </section>
+              <DataTable dataset={cleaningPreview ?? dataset} />
+            </>}
           </>}
 
           {active === 'validation' && (!dataset ? <NoDataset onUpload={() => navigate('upload')} /> : <section className="dash-card validation-card"><div className="dash-card-heading"><div><h2>Validation results</h2><p>Checks for unparseable dates, invalid amounts, and negative income values.</p></div><span className={`validation-count${(validationData?.count ?? 0) ? ' validation-count--issues' : ''}`}>{validationData?.count ?? 0} issues</span></div>{validationData?.issues?.length ? <div className="issue-list">{validationData.issues.map((issue, index) => <article className="issue-row" key={`${issue.row}-${issue.column}-${index}`}><span className="issue-icon"><AlertCircle size={16} /></span><div><b>Row {issue.row} · {issue.column}</b><p>{issue.message}</p></div><code>{issue.column === dataset.analysis.detected_columns.amount ? formatMoney(issue.value) : issue.value ?? '—'}</code></article>)}</div> : <div className="validation-empty"><span><ShieldCheck size={23} /></span><h3>No validation issues found</h3><p>The current data passed the available date and amount checks.</p></div>}{validationData?.truncated && <div className="table-card-footer">Showing the first 500 issues. The API found additional records.</div>}</section>)}

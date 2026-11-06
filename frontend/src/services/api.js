@@ -24,6 +24,21 @@ export async function cleanDataset(datasetId, options) {
   return response.data
 }
 
+export async function previewCleaning(datasetId, options) {
+  const response = await api.post(`/datasets/${datasetId}/clean/preview`, options, { timeout: 60000 })
+  return response.data
+}
+
+export async function undoCleaning(datasetId) {
+  const response = await api.post(`/datasets/${datasetId}/undo`)
+  return response.data
+}
+
+export async function resetDataset(datasetId) {
+  const response = await api.post(`/datasets/${datasetId}/reset`)
+  return response.data
+}
+
 export async function getValidation(datasetId) {
   const response = await api.get(`/datasets/${datasetId}/validation`)
   return response.data

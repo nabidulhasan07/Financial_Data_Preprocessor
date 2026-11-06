@@ -35,12 +35,27 @@ def _get_dataset(dataset_id: str) -> dict:
 
 
 def _payload(dataset_id: str, dataset: dict) -> dict:
-    frame = dataset["frame"]
+    return _frame_payload(dataset_id, dataset, dataset["frame"])
+
+
+def _frame_payload(
+    dataset_id: str,
+    dataset: dict,
+    frame: pd.DataFrame,
+    *,
+    is_preview: bool = False,
+    cleaning_summary: dict | None = None,
+    cleaning_options: dict | None = None,
+) -> dict:
     return {
         "dataset_id": dataset_id,
         "filename": dataset["filename"],
         "cleaned": dataset["cleaned"],
-        "cleaning_summary": dataset["cleaning_summary"],
+        "cleaning_summary": dataset["cleaning_summary"] if cleaning_summary is None else cleaning_summary,
+        "cleaning_options": dataset["cleaning_options"] if cleaning_options is None else cleaning_options,
+        "has_undo": dataset["previous_state"] is not None,
+        "is_preview": is_preview,
+        "original_metrics": dataset["original_metrics"],
         "columns": [str(column) for column in frame.columns],
         "row_count": int(len(frame)),
         "preview": frame_records(frame, limit=100),
@@ -77,7 +92,21 @@ async def upload_dataset(file: UploadFile = File(...)) -> dict:
     frame.columns = [str(column).strip() or f"Column {index + 1}" for index, column in enumerate(frame.columns)]
     dataset_id = str(uuid4())
     with datasets_lock:
-        datasets[dataset_id] = {"filename": filename, "frame": frame, "cleaned": False, "cleaning_summary": None, "original_rows": int(len(frame))}
+        datasets[dataset_id] = {
+            "filename": filename,
+            "original_frame": frame.copy(deep=True),
+            "frame": frame.copy(deep=True),
+            "cleaned": False,
+            "cleaning_summary": None,
+            "cleaning_options": None,
+            "previous_state": None,
+            "original_metrics": {
+                "missing_values": missing_value_count(frame),
+                "missing_amounts": analysis(frame)["missing_amounts"],
+                "duplicate_records": int(frame.duplicated().sum()),
+            },
+            "original_rows": int(len(frame)),
+        }
     return _payload(dataset_id, datasets[dataset_id])
 
 
@@ -89,11 +118,70 @@ def get_dataset(dataset_id: str) -> dict:
 @router.post("/datasets/{dataset_id}/clean")
 def clean_dataset(dataset_id: str, options: CleaningOptions) -> dict:
     dataset = _get_dataset(dataset_id)
-    cleaned, summary = clean_frame(dataset["frame"], options.model_dump())
+    try:
+        cleaned, summary = clean_frame(dataset["original_frame"].copy(deep=True), options.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     with datasets_lock:
+        dataset["previous_state"] = {
+            "frame": dataset["frame"].copy(deep=True),
+            "cleaned": dataset["cleaned"],
+            "cleaning_summary": dataset["cleaning_summary"],
+            "cleaning_options": dataset["cleaning_options"],
+        }
         dataset["frame"] = cleaned
         dataset["cleaned"] = True
         dataset["cleaning_summary"] = summary
+        dataset["cleaning_options"] = options.model_dump()
+    return _payload(dataset_id, dataset)
+
+
+@router.post("/datasets/{dataset_id}/clean/preview")
+def preview_clean_dataset(dataset_id: str, options: CleaningOptions) -> dict:
+    dataset = _get_dataset(dataset_id)
+    try:
+        preview_frame, summary = clean_frame(dataset["original_frame"].copy(deep=True), options.model_dump())
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return _frame_payload(
+        dataset_id,
+        dataset,
+        preview_frame,
+        is_preview=True,
+        cleaning_summary=summary,
+        cleaning_options=options.model_dump(),
+    )
+
+
+@router.post("/datasets/{dataset_id}/undo")
+def undo_cleaning(dataset_id: str) -> dict:
+    dataset = _get_dataset(dataset_id)
+    with datasets_lock:
+        previous = dataset["previous_state"]
+        if previous is None:
+            raise HTTPException(status_code=409, detail="There is no previous cleaning state to restore.")
+        dataset.update(previous)
+        dataset["previous_state"] = None
+    return _payload(dataset_id, dataset)
+
+
+@router.post("/datasets/{dataset_id}/reset")
+def reset_dataset(dataset_id: str) -> dict:
+    dataset = _get_dataset(dataset_id)
+    with datasets_lock:
+        if dataset["cleaned"] or dataset["cleaning_summary"] is not None:
+            dataset["previous_state"] = {
+                "frame": dataset["frame"].copy(deep=True),
+                "cleaned": dataset["cleaned"],
+                "cleaning_summary": dataset["cleaning_summary"],
+                "cleaning_options": dataset["cleaning_options"],
+            }
+        else:
+            dataset["previous_state"] = None
+        dataset["frame"] = dataset["original_frame"].copy(deep=True)
+        dataset["cleaned"] = False
+        dataset["cleaning_summary"] = None
+        dataset["cleaning_options"] = None
     return _payload(dataset_id, dataset)
 
 
@@ -122,6 +210,7 @@ def quality_report(dataset_id: str) -> dict:
         "duplicate_records": int(frame.duplicated().sum()),
         "validation": validation(frame),
         "cleaning_summary": dataset["cleaning_summary"],
+        "cleaning_options": dataset["cleaning_options"],
         "analysis": analysis(frame),
     }
 

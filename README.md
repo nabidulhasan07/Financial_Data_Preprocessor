@@ -54,10 +54,13 @@ positive values count as income and negative values as expenses. Uploaded data
 is held temporarily in backend memory; restarting FastAPI clears it.
 
 Main dataset API routes are `POST /api/datasets` (upload),
-`POST /api/datasets/{id}/clean`, `GET /api/datasets/{id}/validation`,
-`GET /api/datasets/{id}/analysis`, `GET /api/datasets/{id}/quality`, and
-`GET /api/datasets/{id}/quality/pdf` (visual PDF report), and
-`GET /api/datasets/{id}/export?format=csv` or `format=xlsx`.
+`POST /api/datasets/{id}/clean/preview` (preview without applying),
+`POST /api/datasets/{id}/clean` (apply from the original upload),
+`POST /api/datasets/{id}/undo`, `POST /api/datasets/{id}/reset`,
+`GET /api/datasets/{id}/validation`, `GET /api/datasets/{id}/analysis`,
+`GET /api/datasets/{id}/quality`, `GET /api/datasets/{id}/quality/pdf`
+(visual PDF report), and `GET /api/datasets/{id}/export?format=csv` or
+`format=xlsx`.
 
 The visual quality PDF is generated from the same quality report data as the
 JSON download. It includes financial summary cards, income and expense charts,

@@ -160,11 +160,14 @@ def analysis(frame: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def clean_frame(frame: pd.DataFrame, options: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, int]]:
+def clean_frame(frame: pd.DataFrame, options: dict[str, Any]) -> tuple[pd.DataFrame, dict[str, Any]]:
     cleaned = normalize_missing_values(frame)
     columns = detect_columns(cleaned)
     amount_column = columns["amount"]
+    strategy = options["missing_strategy"]
     stats = {
+        "missing_strategy": strategy,
+        "custom_value": options.get("custom_value") if strategy == "fill_custom" else None,
         "duplicates_removed": 0,
         "rows_removed": 0,
         "dates_standardized": 0,
@@ -198,13 +201,15 @@ def clean_frame(frame: pd.DataFrame, options: dict[str, Any]) -> tuple[pd.DataFr
         parsed = _money(cleaned, columns)
         stats["numbers_coerced"] = int((before & parsed.isna()).sum())
         cleaned[name] = parsed
-    strategy = options["missing_strategy"]
+
     missing_before_strategy = missing_value_count(cleaned)
     missing_amounts_before_strategy = int(_missing_mask(cleaned[amount_column]).sum()) if amount_column else 0
     stats["missing_values_detected"] += stats["numbers_coerced"]
     stats["missing_amounts_detected"] += stats["numbers_coerced"]
     missing_mask = pd.DataFrame({column: _missing_mask(cleaned[column]) for column in cleaned.columns}, index=cleaned.index)
     missing_amounts_dropped = 0
+    amount_fill_value: Any = None
+
     if strategy == "drop_rows":
         rows_with_missing = missing_mask.any(axis=1)
         stats["rows_removed"] = int(rows_with_missing.sum())
@@ -212,27 +217,73 @@ def clean_frame(frame: pd.DataFrame, options: dict[str, Any]) -> tuple[pd.DataFr
         if amount_column:
             missing_amounts_dropped = int((missing_mask[amount_column] & rows_with_missing).sum())
         cleaned = cleaned.loc[~rows_with_missing]
-    elif strategy == "fill_zero":
-        numeric = cleaned.select_dtypes(include=["number"]).columns
-        cleaned[numeric] = cleaned[numeric].fillna(0)
-        if amount_column and amount_column not in numeric:
-            cleaned[amount_column] = cleaned[amount_column].mask(missing_mask[amount_column], 0)
-        cleaned = cleaned.fillna("")
-    elif strategy in {"fill_mean", "fill_median"}:
-        numeric = cleaned.select_dtypes(include=["number"]).columns
-        for name in numeric:
-            fill_value = cleaned[name].mean() if strategy == "fill_mean" else cleaned[name].median()
+    elif strategy in {"fill_zero", "fill_mean", "fill_median"}:
+        numeric_columns = list(cleaned.select_dtypes(include=["number"]).columns)
+        for name in numeric_columns:
+            if strategy == "fill_zero":
+                fill_value = 0
+            elif strategy == "fill_mean":
+                fill_value = cleaned[name].mean()
+            else:
+                fill_value = cleaned[name].median()
             if pd.notna(fill_value):
                 cleaned[name] = cleaned[name].fillna(fill_value)
                 if name == amount_column:
-                    stats["missing_amount_fill_value"] = float(fill_value)
-        if amount_column and amount_column not in numeric:
+                    amount_fill_value = float(fill_value)
+
+        # Financial amount columns may be text when numeric coercion is disabled.
+        if amount_column and amount_column not in numeric_columns:
             parsed_amounts = _money(cleaned, columns)
-            fill_value = parsed_amounts.mean() if strategy == "fill_mean" else parsed_amounts.median()
+            if strategy == "fill_zero":
+                fill_value = 0.0
+            elif strategy == "fill_mean":
+                fill_value = parsed_amounts.mean()
+            else:
+                fill_value = parsed_amounts.median()
             if pd.notna(fill_value):
                 cleaned[amount_column] = cleaned[amount_column].mask(missing_mask[amount_column], float(fill_value))
-                stats["missing_amount_fill_value"] = float(fill_value)
-        cleaned = cleaned.fillna("")
+                amount_fill_value = float(fill_value)
+
+    elif strategy == "fill_mode":
+        for name in cleaned.columns:
+            missing = missing_mask[name]
+            if not missing.any():
+                continue
+            frequencies = cleaned.loc[~missing, name].value_counts(sort=False, dropna=True)
+            if frequencies.empty:
+                continue
+            fill_value = frequencies.idxmax()
+            cleaned[name] = cleaned[name].mask(missing, fill_value)
+            if name == amount_column and _finite_number(fill_value) is not None:
+                amount_fill_value = float(fill_value)
+
+    elif strategy == "fill_custom":
+        custom_value = options.get("custom_value")
+        numeric_custom_value: float | None = None
+        numeric_columns = set(cleaned.select_dtypes(include=["number"]).columns)
+        if amount_column:
+            numeric_columns.add(amount_column)
+        for name in cleaned.columns:
+            missing = missing_mask[name]
+            if not missing.any():
+                continue
+            if name in numeric_columns:
+                parsed_custom = pd.to_numeric(custom_value, errors="coerce")
+                if pd.isna(parsed_custom) or not math.isfinite(float(parsed_custom)):
+                    raise ValueError(f"Custom value must be numeric for the '{name}' column.")
+                fill_value = float(parsed_custom)
+                if name == amount_column:
+                    numeric_custom_value = fill_value
+                    amount_fill_value = fill_value
+            else:
+                fill_value = custom_value
+            cleaned[name] = cleaned[name].mask(missing, fill_value)
+        if numeric_custom_value is not None:
+            stats["custom_numeric_value"] = numeric_custom_value
+
+    if amount_fill_value is not None:
+        stats["missing_amount_fill_value"] = amount_fill_value
+
     missing_after_strategy = missing_value_count(cleaned)
     stats["missing_values_filled"] = max(0, missing_before_strategy - stats["missing_values_dropped"] - missing_after_strategy)
     stats["missing_values_remaining"] = missing_after_strategy
@@ -244,3 +295,11 @@ def clean_frame(frame: pd.DataFrame, options: dict[str, Any]) -> tuple[pd.DataFr
         stats["missing_amounts_handled"] = stats["missing_amounts_filled"] + stats["missing_amounts_dropped"]
     cleaned = cleaned.reset_index(drop=True)
     return cleaned, stats
+
+
+def _finite_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
